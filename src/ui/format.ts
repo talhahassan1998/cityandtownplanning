@@ -1,0 +1,5 @@
+export const fmtArea = (m2: number) => (m2 >= 10000 ? `${(m2 / 10000).toFixed(2)} ha` : `${Math.round(m2).toLocaleString()} m²`)
+export const fmtLen = (m: number) => (m >= 1000 ? `${(m / 1000).toFixed(2)} km` : `${m.toFixed(1)} m`)
+export const fmtNum = (n: number) => Math.round(n).toLocaleString()
+export const fmtMoney = (n: number) => (n >= 1e6 ? `$${(n / 1e6).toFixed(2)} M` : `$${fmtNum(n)}`)
+export const pct = (a: number, b: number) => (b > 0 ? `${((a / b) * 100).toFixed(1)}%` : '—')
