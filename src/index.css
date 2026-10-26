@@ -1,0 +1,32 @@
+@import "tailwindcss";
+
+@theme inline {
+  --color-app: var(--app);
+  --color-panel: var(--panel);
+  --color-panel2: var(--panel2);
+  --color-ink: var(--ink);
+  --color-muted: var(--muted);
+  --color-line: var(--line);
+  --color-accent: #00b8d4;
+  --color-warn: #ff8a3d;
+  --color-bad: #ff4d4d;
+  --font-sans: "Inter", "Segoe UI", system-ui, sans-serif;
+}
+
+:root { --app: #15181c; --panel: #1d2126; --panel2: #262b31; --ink: #e4e7eb; --muted: #8a929c; --line: #333941; color-scheme: dark; }
+:root.light { --app: #e8eaed; --panel: #f7f8f9; --panel2: #eceef1; --ink: #1c2026; --muted: #646c77; --line: #d3d7dc; color-scheme: light; }
+
+html, body, #root { height: 100%; margin: 0; }
+body { background: var(--app); color: var(--ink); font-family: var(--font-sans); }
+
+.input { @apply w-full rounded border border-line bg-panel2 px-1.5 py-1 text-xs text-ink outline-none focus:border-accent; }
+.btn { @apply inline-flex items-center gap-1 rounded px-2 py-1 text-xs hover:bg-panel2 disabled:cursor-not-allowed disabled:opacity-40; }
+.btn-on { @apply bg-accent/20 text-accent; }
+.btn-primary { @apply rounded bg-accent px-3 py-1 text-xs font-medium text-black hover:brightness-110 disabled:opacity-40; }
+.planned { @apply ml-1 rounded bg-panel2 px-1 text-[9px] uppercase tracking-wide text-muted; }
+.section { @apply border-b border-line px-3 py-2; }
+.label { @apply text-[10px] font-semibold uppercase tracking-wider text-muted; }
+
+.maplibregl-ctrl-group { background: var(--panel) !important; }
+.maplibregl-ctrl-group button span { filter: var(--icon-filter, invert(0.85)); }
+:root.light .maplibregl-ctrl-group button span { filter: none; }
