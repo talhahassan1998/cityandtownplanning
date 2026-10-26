@@ -1,0 +1,27 @@
+# Phase 6 backend: `docker compose up -d` then `npm run dev` (Vite proxies /api to port 8000).
+services:
+  db:
+    image: postgis/postgis:17-3.5
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: urbanforge
+      POSTGRES_PASSWORD: urbanforge
+      POSTGRES_DB: urbanforge
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U urbanforge"]
+      interval: 2s
+      retries: 30
+  api:
+    build: ./backend
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://urbanforge:urbanforge@db:5432/urbanforge
+    depends_on:
+      db: { condition: service_healthy }
+    # localhost only: there is no authentication yet
+    ports: ["127.0.0.1:8000:8000"]
+    volumes: ["./backend/app:/srv/app", "./backend/tests:/srv/tests"]
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+volumes:
+  pgdata:
