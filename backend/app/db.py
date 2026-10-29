@@ -2,6 +2,7 @@
 its features are mirrored into a PostGIS table so the server can validate and later query geometry."""
 import json
 import os
+import time
 
 import psycopg
 from psycopg.types.json import Jsonb
@@ -32,9 +33,18 @@ def connect() -> psycopg.Connection:
     return psycopg.connect(DSN)
 
 
-def migrate() -> None:
-    with connect() as c:
-        c.execute(SCHEMA)
+def migrate(attempts: int = 30, wait: float = 1.0) -> None:
+    """Creates the schema, retrying while Postgres starts: Docker's restart policy starts the api with the db
+    after a reboot, ignoring compose's depends_on, and the api exits if the db isn't accepting connections yet."""
+    for i in range(attempts):
+        try:
+            with connect() as c:
+                c.execute(SCHEMA)
+            return
+        except psycopg.OperationalError:
+            if i == attempts - 1:
+                raise
+            time.sleep(wait)
 
 
 def list_projects() -> list[dict]:
@@ -64,9 +74,10 @@ def save_project(p: dict) -> list[dict]:
         )
         c.execute("DELETE FROM features WHERE project_id = %s", (p["id"],))
         # ponytail: full rewrite of the mirror per save; per-feature upserts when collaboration needs them
+        # Force2D: imported/contour features can carry Z; the column is 2D and Z stays in the project JSON
         with c.cursor() as cur:
             cur.executemany(
-                "INSERT INTO features (project_id, id, type, layer_id, geom) VALUES (%s, %s, %s, %s, ST_SetSRID(ST_GeomFromGeoJSON(%s), 4326))",
+                "INSERT INTO features (project_id, id, type, layer_id, geom) VALUES (%s, %s, %s, %s, ST_Force2D(ST_SetSRID(ST_GeomFromGeoJSON(%s), 4326)))",
                 [(p["id"], f["id"], f["properties"]["type"], f["properties"]["layerId"], json.dumps(f["geometry"])) for f in feats],
             )
         rows = c.execute(

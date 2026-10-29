@@ -3,3 +3,4 @@ dist
 
 .superpowers
 .impeccable
+__pycache__/
