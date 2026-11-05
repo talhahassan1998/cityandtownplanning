@@ -2,7 +2,7 @@
 
 A browser-based GIS/CAD planning editor: draw development boundaries and roads, subdivide land into plots, drag-and-drop buildings and facilities, inspect live planning statistics, and view the same data in 3D.
 
-**Status: release 0.6 covers Phases 1–5.** Phase 3 adds zoning development controls per jurisdiction, compliance checking, thematic maps and a heatmap, land-use targets, and a printable planning report. Phase 4 adds a Three.js 3D city view with real terrain, roofs, sun and shadows, and orbit, top-down and walk cameras. Phase 5 adds infrastructure networks with connectivity checks, KML/KMZ, Shapefile, CSV, DXF and OpenStreetMap import/export, a print composer, and a master-plan wizard. Anything not built yet is shown in the UI as disabled with a `PLANNED` badge. No control pretends to work.
+**Status: release 0.6 covers Phases 1–5.** Phase 3 adds zoning development controls per jurisdiction, compliance checking, thematic maps and a heatmap, land-use targets, and a printable planning report. Phase 4 adds a Three.js 3D city view with real terrain, roofs, sun and shadows, and orbit, top-down and walk cameras. Phase 5 adds infrastructure networks with connectivity checks, KML/KMZ, Shapefile, CSV, DXF and OpenStreetMap import/export, a print composer, and a master-plan wizard. Phase 6 (in progress) adds an optional FastAPI + PostGIS + GDAL backend: server-side projects, GeoPackage import/export and DEM contours. Anything not built yet is shown in the UI as disabled with a `PLANNED` badge. No control pretends to work.
 
 > Generated layouts are preliminary planning aids. They are **not** legally approved or construction-ready designs.
 
@@ -13,7 +13,7 @@ Requires Node.js 20+ (developed on Node 24).
 ```bash
 npm install
 npm run dev        # http://localhost:5173
-npm test           # Vitest: geometry + persistence
+npm test           # Vitest (413 tests)
 npm run build      # type-check + production bundle in dist/
 npm run preview    # serve the production build locally
 ```
@@ -169,7 +169,9 @@ Geometry is stored in **WGS 84 (EPSG:4326)**. Lengths and areas are computed geo
 | DXF (AutoCAD R12 ASCII) | ✅ LINE, (LW)POLYLINE, POINT, CIRCLE | ✅ metres from the project centre, one CAD layer per UrbanForge layer, plot numbers as TEXT |
 | OpenStreetMap (Overpass API, current view ≤ 4 km²) | ✅ roads, buildings, rail, parks, water, land use | — |
 | Print layout (A4–A1, fit or exact scale) | — | ✅ print-ready HTML (print to PDF) |
-| GeoPackage, GeoTIFF / DEM, DWG | needs backend | needs backend |
+| GeoPackage, other OGR vector formats (backend) | ✅ reprojected to WGS 84 | ✅ GeoPackage, one layer per UrbanForge layer, WGS 84 or UTM |
+| GeoTIFF / DEM (backend) | ✅ contour lines | — |
+| DWG | needs ODA converter | needs ODA converter |
 
 **Classification of foreign data.** OSM-style tags map to real types: `highway=*` → road classes, `building` → building (floors from `building:levels`), parks, gardens, pitches, forest, water, and `landuse` → zoning areas. CAD/GIS layer names act as hints too: e.g. "PLOTS" → plot, "BLDG" → building, "WATER" → water main. Unrecognised features become neutral zones, roads or points by geometry; source attributes are always kept. Numeric strings from text formats are restored to numbers, and the type's defaults (e.g. road width) fill any gaps.
 
@@ -177,7 +179,7 @@ Geometry is stored in **WGS 84 (EPSG:4326)**. Lengths and areas are computed geo
 
 **OpenStreetMap.** Data © OpenStreetMap contributors (ODbL). The importer tries overpass-api.de and then two public mirrors (45 s timeout each) and reports each failure. Multipolygon relations are not imported. Respect the Overpass usage policy: keep areas small and requests occasional.
 
-GeoPackage (SQLite), GeoTIFF rasters and DWG need GDAL/OGR, so they wait for the Phase 6 backend. The UI marks them "needs backend" instead of faking them.
+GeoPackage, GeoTIFF/DEM and other OGR formats go through the Phase 6 backend (GDAL/OGR). When it isn't running the UI marks them "needs backend" instead of faking them. DWG stays unsupported: it needs the ODA File Converter.
 
 ## Basemaps and licensing
 
@@ -241,9 +243,24 @@ The UI flows were checked manually in Chrome: draw boundary, draw road, subdivid
 | 3 | Zoning controls per jurisdiction (height, floors, FAR, coverage, min plot, setback, density, permitted uses), live compliance checking, thematic maps and heatmap, land-use targets, HTML planning report and compliance CSV | ✅ done |
 | 4 | Three.js city view: real terrain + draped imagery, roof styles and colours, bridges/tunnels, trees and street lights, sun position and shadows, orbit/top-down/walk cameras, click-to-select | ✅ done |
 | 5 | Network layers and checks, KML/KMZ, Shapefile, CSV/WKT, DXF and OSM import/export, print composer, master-plan wizard | ✅ done (GeoPackage, GeoTIFF/DEM and DWG moved to Phase 6 with GDAL) |
-| 6 | FastAPI + PostGIS backend with GDAL (GeoPackage, GeoTIFF/DEM, DWG via conversion, reprojection), background jobs, cloud storage, collaboration and roles | planned |
+| 6 | FastAPI + PostGIS backend with GDAL. Slice 1 ✅ running: server projects, GeoPackage/OGR import + GeoPackage export (WGS 84 or UTM), DEM → contours. Next: background jobs, auth/roles, collaboration, cloud storage, deployment | in progress |
 
-Planned backend shape (not yet in this repo): FastAPI with PostgreSQL/PostGIS, GeoPandas/Shapely/PyProj for processing, GDAL/OGR for format conversion, and a job queue for large imports and generation. The project JSON above is the API payload contract.
+## Backend (Phase 6, optional)
+
+The editor works fully without it (IndexedDB only). With it, projects are also saved to the server and GDAL formats unlock.
+
+Requires Docker Desktop (on Windows: WSL 2).
+
+```bash
+docker compose up -d                                  # PostGIS 17 + API on 127.0.0.1:8001
+npm run dev                                           # Vite proxies /api → 127.0.0.1:8001
+docker compose run --rm api python -m pytest -q       # backend tests (plain `pytest` can't import app)
+```
+
+- `backend/app/main.py` FastAPI: `GET /api/health`, `GET/PUT/DELETE /api/projects/{id}`, `GET /api/projects`, `POST /api/convert/import` (OGR vector or DEM), `POST /api/convert/gpkg`.
+- `backend/app/db.py` PostGIS: project JSON plus a 2D features mirror (Z stays in the JSON) and a geometry-validity report.
+- `backend/app/gdal_ops.py` GDAL/OGR: vector → WGS 84, DEM → contours, GeoJSON → GeoPackage per layer in an EPSG CRS (UTM zone picked from the project centre).
+- The API is bound to localhost only: there is no authentication yet. Port 8001 is used because 8000 is often taken.
 
 ## Known limits
 
@@ -262,7 +279,7 @@ Planned backend shape (not yet in this repo): FastAPI with PostgreSQL/PostGIS, G
 - The 3D sun slider uses solar time (12:00 = sun due south/north), not local clock time.
 - 3D rebuilds take about 13 ms for small scenes and about 190 ms per 1,000 plots; projects with 10,000+ plots will lag a second or two after each edit.
 - Terrain tiles and OSM imagery are fetched from public servers. For heavy production use, host your own tiles (see Basemaps and licensing).
-- The wizard plans inside the site polygon only. It doesn't avoid existing roads, buildings or terrain on the map (or the basemap's real roads), so draw or import the constraints and pick a clear site.
+- The wizard surveys the site first (project features + OpenStreetMap via Overpass) and can plan around existing roads, buildings and water, but it doesn't account for terrain slope.
 - The wizard's band layout is a deliberately simple rule set (spine + bands + grid blocks) for early massing, not an optimiser.
 - Network checks are geometric; they don't test pressures, flows, voltage drop or capacity.
 - OpenStreetMap import depends on public Overpass servers, which are sometimes overloaded. The importer tries three servers and then reports the failure.

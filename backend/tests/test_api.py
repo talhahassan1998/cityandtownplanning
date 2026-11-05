@@ -48,6 +48,15 @@ def test_project_round_trip_and_validity_report(client):
     assert client.get(f"/api/projects/{pid}").status_code == 404
 
 
+def test_saves_features_with_z(client):
+    pid = "t-" + uuid.uuid4().hex[:8]
+    line = [[67, 24.86, 12.5], [67.001, 24.861, 13]]
+    r = client.put(f"/api/projects/{pid}", json=project(pid, {"c": feat("c", line, "LineString", "contour")}))
+    assert r.status_code == 200, r.text
+    assert client.get(f"/api/projects/{pid}").json()["features"]["c"]["geometry"]["coordinates"] == line  # Z kept in JSON
+    client.delete(f"/api/projects/{pid}")
+
+
 def test_rejects_mismatched_or_malformed_projects(client):
     assert client.put("/api/projects/x", json=project("y", {})).status_code == 422
     bad = feat("a", SQUARE)
@@ -73,7 +82,7 @@ def test_geopackage_import_reprojects_to_wgs84(tmp_path, client):
     utm_gpkg(p)
     fc, notes = gdal_ops.vector_to_geojson(p)
     lon, lat = fc["features"][0]["geometry"]["coordinates"][0][0]
-    assert 66 < lon < 67 and 24 < lat < 25.5  # UTM 42N easting 300 km ≈ 67°E… west of the central meridian
+    assert 66.5 < lon < 67.5 and 24 < lat < 25.5  # UTM 42N easting 300 km: 200 km west of the 69°E central meridian ≈ 67.02°E
     assert fc["features"][0]["properties"] == {"landuse": "residential", "layer": "parcels"}
     assert "EPSG:32642" in notes[0]
     with open(p, "rb") as f:
@@ -122,3 +131,19 @@ def test_gpkg_export_one_table_per_layer_in_target_crs(tmp_path, client):
     assert layers["Plots"].GetSpatialRef().GetAuthorityCode(None) == str(UTM)
     assert layers["Plots"].GetFeatureCount() == 1
     assert client.post("/api/convert/gpkg?srs=http://evil", content=json.dumps(fc)).status_code == 422
+
+
+def test_migrate_retries_while_db_starts(monkeypatch):
+    from app import db
+    calls = []
+    real = db.connect
+
+    def flaky():
+        calls.append(1)
+        if len(calls) < 3:
+            raise db.psycopg.OperationalError("the database system is starting up")
+        return real()
+
+    monkeypatch.setattr(db, "connect", flaky)
+    db.migrate(wait=0)
+    assert len(calls) == 3

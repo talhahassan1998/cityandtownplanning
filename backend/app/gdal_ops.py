@@ -95,8 +95,9 @@ def dem_contours(path: str, interval: float | None = None) -> tuple[dict, list[s
     lyr = mem.CreateLayer("contours", srs, ogr.wkbLineString)
     lyr.CreateField(ogr.FieldDefn("elevation", ogr.OFTReal))
     nodata = band.GetNoDataValue()
-    gdal.ContourGenerateEx(band, lyr, options=[f"INTERVAL={step}", "ELEV_FIELD=elevation"] + ([f"NODATA={nodata}"] if nodata is not None else []))
-    feats = _to_geojson(mem)
+    gdal.ContourGenerateEx(band, lyr, options=[f"LEVEL_INTERVAL={step}", "ELEV_FIELD=elevation"] + ([f"NODATA={nodata}"] if nodata is not None else []))
+    # a level equal to the min/max only traces the raster's edge
+    feats = [f for f in _to_geojson(mem) if lo < f["properties"]["elevation"] < hi]
     for f in feats:
         f["properties"] = {"type": "contour", "name": f"Contour {f['properties']['elevation']:g} m", "elevation": f["properties"]["elevation"]}
     notes.insert(0, f"DEM {_srs_name(srs)}, elevation {lo:.1f}–{hi:.1f} m, contours every {step:g} m ({len(feats)} lines)")

@@ -162,6 +162,6 @@ Each step lists **Do** (what to click), **Expect** (what should happen) and **Sa
 
 ## What to say about what isn't built yet
 
-- **GeoPackage, GeoTIFF/terrain files, DWG:** marked "needs backend" in the menus; they come with the server phase (Phase 6).
-- **Cloud saving, team collaboration, user roles:** Phase 6. Today projects are saved in this browser, and project files can be shared by export.
+- **GeoPackage, GeoTIFF/terrain files:** work when the backend is running (`docker compose up -d`); otherwise marked "needs backend". **DWG:** not supported (needs the ODA converter).
+- **Team collaboration, user roles, cloud storage:** later in Phase 6. Today projects save in this browser and, with the backend running, to the local PostGIS server; project files can be shared by export.
 - **Proposals and reports:** always preliminary planning aids. Never present them as legally approved or construction-ready.
