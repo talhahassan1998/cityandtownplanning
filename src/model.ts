@@ -71,12 +71,13 @@ export interface Project {
   updatedAt: string
 }
 
-export type BasemapId = 'osm' | 'grey' | 'none' | 'google-roadmap' | 'google-satellite'
+export type BasemapId = 'osm' | 'grey' | 'none' | 'google-roadmap' | 'google-satellite' | 'google-earth'
 export const BASEMAPS: { id: BasemapId; label: string }[] = [
   { id: 'grey', label: 'OSM (muted)' },
   { id: 'osm', label: 'OpenStreetMap' },
   { id: 'google-roadmap', label: 'Google Maps' },
   { id: 'google-satellite', label: 'Google Satellite' },
+  { id: 'google-earth', label: 'Google Earth (3D)' },
   { id: 'none', label: 'Blank canvas' },
 ]
 

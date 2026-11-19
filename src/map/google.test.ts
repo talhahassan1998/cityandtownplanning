@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { googleCopyright, googleKey, googleSession, googleTileUrl, setGoogleKey, _resetGoogleSessions } from './google'
+import { BASEMAPS } from '../model'
+import { googleCopyright, googleKey, googleMapType, googleSession, googleTileUrl, setGoogleKey, _resetGoogleSessions } from './google'
 
 const ok = (body: unknown) => Promise.resolve(new Response(JSON.stringify(body), { status: 200 }))
 afterEach(() => { vi.unstubAllGlobals(); _resetGoogleSessions() })
@@ -47,5 +48,15 @@ describe('Google Map Tiles', () => {
     vi.stubGlobal('localStorage', { getItem: () => { throw new Error('blocked') }, setItem: () => { throw new Error('blocked') } })
     expect(googleKey()).toBe('')
     expect(() => setGoogleKey('K2')).not.toThrow()
+  })
+})
+
+describe('basemap → Google tile type', () => {
+  it('maps basemaps to Google tile types', () => {
+    expect(googleMapType('google-roadmap')).toBe('roadmap')
+    expect(googleMapType('google-satellite')).toBe('satellite')
+    expect(googleMapType('google-earth')).toBe('satellite')
+    expect(googleMapType('osm')).toBeNull()
+    expect(BASEMAPS.map((b) => b.id)).toEqual(['grey', 'osm', 'google-roadmap', 'google-satellite', 'google-earth', 'none'])
   })
 })

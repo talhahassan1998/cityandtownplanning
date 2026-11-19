@@ -6,16 +6,62 @@ import pytest
 from fastapi.testclient import TestClient
 from osgeo import gdal, ogr, osr
 
-from app import gdal_ops
+from app import db, gdal_ops
 from app.main import app
 
 UTM = 32642  # Karachi's UTM zone, a typical projected source CRS
 
 
+CREATED: list[str] = []  # test accounts, deleted afterwards: tests share the dev database, whose first account becomes a planner
+
+
+def signed_in(c: TestClient) -> dict:
+    CREATED.append("test-" + uuid.uuid4().hex[:10])
+    r = c.post("/api/auth/register", json={"username": CREATED[-1], "name": "Test", "password": "correct horse"})
+    assert r.status_code == 201, r.text
+    return r.json()
+
+
 @pytest.fixture(scope="module")
 def client():
     with TestClient(app) as c:  # runs the lifespan → schema migration
+        signed_in(c)
         yield c
+    with db.connect() as conn:
+        conn.execute("DELETE FROM users WHERE username = ANY(%s)", (CREATED,))
+
+
+def test_accounts_sessions_and_private_projects(client):
+    with TestClient(app) as anon:
+        assert anon.get("/api/auth/me").status_code == 401
+        assert anon.get("/api/projects").status_code == 401
+        assert anon.post("/api/convert/gpkg", json={}).status_code == 401
+    me = client.get("/api/auth/me").json()
+    assert client.post("/api/auth/register", json={"username": me["username"], "name": "x", "password": "another one"}).status_code == 409
+    assert client.post("/api/auth/register", json={"username": "ab", "name": "x", "password": "short"}).status_code == 422
+    pid = "t-" + uuid.uuid4().hex[:8]
+    assert client.put(f"/api/projects/{pid}", json=project(pid, {})).status_code == 200
+    with TestClient(app) as other:
+        signed_in(other)
+        assert other.get(f"/api/projects/{pid}").status_code == 404
+        assert other.put(f"/api/projects/{pid}", json=project(pid, {})).status_code == 404
+        assert all(p["id"] != pid for p in other.get("/api/projects").json())
+        assert other.delete(f"/api/projects/{pid}").status_code == 404
+    with TestClient(app) as again:  # log in with the password, case-insensitive username, then log out
+        r = again.post("/api/auth/login", json={"username": me["username"].upper(), "password": "correct horse"})
+        assert r.status_code == 200 and r.json()["id"] == me["id"]
+        assert again.get(f"/api/projects/{pid}").status_code == 200
+        assert again.post("/api/auth/logout").status_code == 204
+        assert again.get("/api/auth/me").status_code == 401
+    client.delete(f"/api/projects/{pid}")
+
+
+def test_wrong_passwords_are_rejected_then_throttled(client):
+    with TestClient(app) as c:
+        name = signed_in(c)["username"]
+        codes = [c.post("/api/auth/login", json={"username": name, "password": "nope"}).status_code for _ in range(6)]
+        assert codes == [401] * 5 + [429]
+        assert c.post("/api/auth/login", json={"username": name, "password": "correct horse"}).status_code == 429
 
 
 def project(pid: str, features: dict) -> dict:

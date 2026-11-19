@@ -1,6 +1,8 @@
-import type { FeatureCollection, Position } from 'geojson'
+import type { FeatureCollection, Polygon, Position } from 'geojson'
+import type { ConstructionResult } from './imagery'
 import type { Project } from './model'
 import type { ProjectSummary } from './persist'
+import { create } from 'zustand'
 
 /**
  * Client for the Phase 6 backend (backend/, FastAPI + PostGIS + GDAL), reached via /api (Vite proxies it
@@ -17,10 +19,25 @@ async function call<T>(path: string, init?: RequestInit): Promise<T> {
   return (r.status === 204 ? undefined : type.includes('json') ? r.json() : r.blob()) as Promise<T>
 }
 
+export type User = { id: number; username: string; name: string; role: 'planner' | 'applicant' }
+const json = (body: unknown): RequestInit => ({ method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
+
+/** Who is signed in: undefined while checking, null = server up but signed out, 'offline' = no server (IndexedDB-only editing). */
+export const useSession = create<{ user: User | null | 'offline' | undefined }>(() => ({ user: undefined }))
+const setUser = (user: User | null | 'offline') => { useSession.setState({ user }); return user }
+
+export const refreshSession = () => call<User>('/auth/me').then(setUser, async () => setUser((await serverUp()) ? null : 'offline'))
+export const login = (username: string, password: string, remember: boolean) => call<User>('/auth/login', json({ username, password, remember })).then(setUser)
+export const register = (username: string, name: string, password: string) => call<User>('/auth/register', json({ username, name, password })).then(setUser)
+export const logout = () => call<void>('/auth/logout', { method: 'POST' }).finally(() => setUser(null))
+
 /** True when the API and its database answer (re-checked every call, cheap). */
 export const serverUp = () => call<{ db: boolean }>('/health').then((h) => h.db, () => false)
 
-export const listServerProjects = () => call<ProjectSummary[]>('/projects')
+/** Possible recent construction on the site from Sentinel-2 (slow: ~30–60 s). */
+export const checkConstruction = (site: Polygon) => call<ConstructionResult>('/imagery/construction', json({ site }))
+
+export const listServerProjects =() => call<ProjectSummary[]>('/projects')
 export const loadServerProject = (id: string) => call<Project>(`/projects/${encodeURIComponent(id)}`)
 export const deleteServerProject = (id: string) => call<void>(`/projects/${encodeURIComponent(id)}`, { method: 'DELETE' })
 /** Stores the project; returns PostGIS geometry-validity problems (reported, not rejected). */

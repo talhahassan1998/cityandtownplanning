@@ -1,5 +1,5 @@
 import { useRef } from 'react'
-import { Box, Cable, Droplets, ChevronDown, Download, FolderOpen, Grid2x2, Hand, HardDrive, LayoutGrid, Magnet, Map as MapIcon, MapPin, Moon, MousePointer2, Pentagon, Redo2, Route, Ruler, Save, Scale, Scissors, Square, SquareDashed, Undo2, Upload, Wand2, type LucideIcon } from 'lucide-react'
+import { Box, Cable, Droplets, ChevronDown, Download, FolderOpen, Grid2x2, Hand, HardDrive, LayoutGrid, Magnet, Map as MapIcon, MapPin, Moon, MousePointer2, Pentagon, Redo2, Route, Ruler, Save, Scale, Scissors, Square, SquareDashed, Undo2, Upload, Wand2, LogOut, type LucideIcon } from 'lucide-react'
 import * as turf from '@turf/turf'
 import { useStore as useZustand } from 'zustand'
 import { makeFeature, redo, toProject, undo, useStore, type Tool } from '../store'
@@ -15,7 +15,7 @@ import { complianceOf } from '../zoning'
 import { complianceCSV, planningReport } from '../report'
 import { frame, plotAxis, stats } from '../geo'
 import { saveCurrent, type Dialog } from '../App'
-import { GDAL_RASTER, GDAL_VECTOR, gdalExportGpkg, serverUp, utmEpsg } from '../api'
+import { GDAL_RASTER, GDAL_VECTOR, gdalExportGpkg, logout, serverUp, useSession, utmEpsg } from '../api'
 
 const TOOLS: { id: Tool; short: string; label: string; key: string; icon: LucideIcon; group: string }[] = [
   { id: 'select', short: 'Select', label: 'Select & edit — click an object, drag to move', key: 'V', icon: MousePointer2, group: 'Navigate' },
@@ -194,7 +194,19 @@ export default function Toolbar({ openDialog, notify }: { openDialog: (d: Dialog
       </select>
       <button className={`btn ${s.view3d ? 'btn-on' : ''}`} onClick={() => s.setView3d(!s.view3d)} title={s.view3d ? 'Back to the 2D map' : 'Open the 3D city view (same data)'}><Box size={14} />3D view</button>
       <button className="btn" onClick={() => document.documentElement.classList.toggle('light')} title="Switch light / dark theme" aria-label="Switch light or dark theme"><Moon size={15} /></button>
+      <Account />
     </header>
+  )
+}
+
+function Account() {
+  const user = useSession((s) => s.user)
+  if (!user || user === 'offline') return <a className="btn" href="#login" title="The server isn't reachable: editing stays in this browser">Offline</a>
+  return (
+    <span className="flex items-center gap-1 text-xs text-muted">
+      <span title={`${user.username} · ${user.role}`}>{user.name}</span>
+      <button className="btn" onClick={async () => { if (!useStore.getState().dirty || confirm('Sign out? Unsaved changes stay in this browser’s recovery slot.')) await logout() }} title="Sign out" aria-label="Sign out"><LogOut size={14} /></button>
+    </span>
   )
 }
 

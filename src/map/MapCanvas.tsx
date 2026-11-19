@@ -9,7 +9,7 @@ import workerUrl from 'maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url'
 import { TerraDraw, TerraDrawLineStringMode, TerraDrawPointMode, TerraDrawPolygonMode, TerraDrawSelectMode, type GeoJSONStoreFeatures, type SnapToCustom } from 'terra-draw'
 import { TerraDrawMapLibreGLAdapter } from 'terra-draw-maplibre-gl-adapter'
 import type { Feature, FeatureCollection, LineString, Polygon } from 'geojson'
-import { googleCopyright, googleKey, googleSession, googleTileUrl } from './google'
+import { googleCopyright, googleKey, googleMapType, googleSession, googleTileUrl } from './google'
 import { BASEMAPS, colorOf, componentDef, GENERIC_RULESET, type PlanFeature, type PlanGeometry } from '../model'
 import { designLine, lockedIds, useStore, type State, type Tool } from '../store'
 import { gridLines, knobPoint, measure, ringAngle, roadSurface, rotate, roundGeometry, snapScreen, snapToGrid } from '../geo'
@@ -381,7 +381,7 @@ export default function MapCanvas() {
       if (!b.startsWith('google-')) return
       const key = googleKey(), back = (msg: string) => { useStore.getState().notify(msg); useStore.getState().setMeta({ basemap: 'grey' }) }
       if (!key) return back('Google basemaps need your own Google Maps API key: paste it in Analytics → Google Maps API key, then choose the basemap again.')
-      googleSession(key, b === 'google-satellite' ? 'satellite' : 'roadmap').then((session) => {
+      googleSession(key, googleMapType(b)!).then((session) => {
         if (useStore.getState().meta.basemap !== b || map.getSource('google')) return // switched away meanwhile
         map.addSource('google', { type: 'raster', tiles: [googleTileUrl(key, session)], tileSize: 256, maxzoom: 22 })
         map.addLayer({ id: 'base-google', type: 'raster', source: 'google' }, 'base-osm')

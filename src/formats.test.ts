@@ -2,7 +2,7 @@
 import { describe, expect, it } from 'vitest'
 import * as turf from '@turf/turf'
 import { footprint, lineAt } from './geo'
-import { componentDef, defaultAttrs, newProject, type PlanFeature } from './model'
+import { componentDef, defaultAttrs, FLOOR_HEIGHT, newProject, type PlanFeature } from './model'
 import { importFeatureCollection } from './persist'
 import {
   classifyForeign, csvToGeoJSON, dxfToGeoJSON, fromWKT, kmlTextToGeoJSON, overpassToGeoJSON, parseCSV,
@@ -34,6 +34,14 @@ describe('KML', () => {
     expect(roundTripTypes(features)).toEqual(roundTripTypes(sample))
     expect(features.find((f) => f.properties.type === 'road')!.properties.attrs.width).toBe(12)
     expect(areaOf(features, 'plot')).toBeCloseTo(450, -1)
+  })
+  it('extrudes buildings to their height, leaves plots flat', () => {
+    const kml = toKML(sample, P.layers, 'x')
+    const house = sample[2].properties.attrs
+    const h = Number(house.height) || Number(house.floors) * FLOOR_HEIGHT
+    expect(h).toBeGreaterThan(0)
+    expect(kml.match(/<extrude>1<\/extrude>/g)).toHaveLength(1)
+    expect(kml).toContain(`,${h} `)
   })
   it('rejects broken XML', () => {
     expect(() => kmlTextToGeoJSON('<kml><Document>')).toThrow(/KML/)
