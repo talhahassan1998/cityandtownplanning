@@ -25,7 +25,8 @@ the option is hidden in that mode.
 `planSectors(plots: GeneratedPlot[], count: number, opts: { park; market; mosque }): SectorPlan`
 
 - Input: free (no `issue`), residential plots. Centroids are taken in a local `frame()` around their mean.
-- `count` clamped to `1 … floor(plots / plotsNeededPerSector)` so every sector can hold its amenities.
+- `count` clamped to `1 … floor(distinct blocks / 2)` (each sector needs a market/mosque block and a park block),
+  minimum 1.
 - Clustering: k-means on plot centroids, deterministic seeding (first seed = plot farthest from the mean,
   then farthest-point), fixed iteration cap (20). Same input → same output.
 - Per sector, centre = mean of its plot centroids:
