@@ -49,6 +49,11 @@ describe('site clearance', () => {
       { type: 'Feature', geometry: footprint(far, 10, 10), properties: { building: 'yes' } },
     ] }
     expect(osmConflicts(site, fc).map((c) => c.label)).toEqual(['building', 'highway=residential "Main St"'])
+    const building = { type: 'Feature' as const, geometry: footprint(C, 10, 10), properties: { building: 'construction', construction: 'apartments' } }
+    const yard = { type: 'Feature' as const, geometry: footprint(C, 30, 30), properties: { landuse: 'construction' } }
+    const c = osmConflicts(site, { type: 'FeatureCollection', features: [...fc.features, building, yard] })
+    expect(c.map((x) => x.label).slice(0, 3)).toEqual(['building under construction (apartments)', 'construction site', 'building'])
+    expect(c.filter((x) => x.construction)).toHaveLength(2)
     expect(siteQuery([1, 2, 3, 4])).toContain('way["building"](2,1,4,3);')
     expect(siteQuery([1, 2, 3, 4], [0, 1, 5, 6])).toContain('way["highway"](1,0,6,5);')
   })

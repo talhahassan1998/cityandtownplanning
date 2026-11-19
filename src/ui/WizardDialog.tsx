@@ -11,8 +11,12 @@ const CLEAR_OF_DIALOG = { top: 60, bottom: 60, left: 60, right: 460 + 60 }
 import { housingType, residentialPlotSize } from '../infill'
 import { DEFAULT_BRIEF, generatePlan, plotSizeFor, portionOf, squareSite, VARIANTS, type Brief, type Proposal } from '../masterplan'
 import { REACH, surveySite, type Conflict, type Survey } from '../sitecheck'
+import { generateOnRoads } from '../existingplan'
+import { AUTHORITIES, authorityChecks, detectAuthority, type AuthorityId } from '../authority'
 import { fmtArea, fmtMoney } from './format'
 import { frame } from '../geo'
+import { checkConstruction } from '../api'
+import { imageryNote, type ConstructionResult } from '../imagery'
 
 const STEPS = ['Site', 'People & housing', 'Land use', 'Roads & facilities', 'Budget', 'Alternatives'] as const
 
@@ -42,12 +46,23 @@ export default function WizardDialog({ close, notify }: { close: () => void; not
   // what's already on/near the site, for the site it was surveyed for; `around`: plan around it
   const [survey, setSurvey] = useState<{ site: Polygon; sv: Survey } | null>(null)
   const [around, setAround] = useState(false)
+  // 'roads': build on the existing road network (existingplan.ts) instead of a new spine + grid
+  const [mode, setMode] = useState<'grid' | 'roads'>('grid')
+  // Sentinel-2 "possible construction" note (imagery.ts): runs beside the survey, never read by generation
+  const [imagery, setImagery] = useState<{ site: Polygon; r?: ConstructionResult | Error } | null>(null)
+  const [imgShown, setImgShown] = useState(false)
 
   const site: Polygon = useMemo(() => {
     if (useSel && selBoundary) return devHa ? portionOf(selBoundary.geometry as Polygon, devHa, fromEnd) : selBoundary.geometry as Polygon
     const c = mapInstance?.getCenter()
     return squareSite(c ? [c.lng, c.lat] : s.meta.center, hectares)
   }, [useSel, selBoundary, hectares, devHa, fromEnd, s.meta.center])
+  // housing-society rules to compare with: CDA / RDA picked from the site's location unless overridden (authority.ts)
+  const [rulesChoice, setRulesChoice] = useState<'auto' | AuthorityId>('auto')
+  const detected = useMemo(() => detectAuthority(turf.centroid(site).geometry.coordinates), [site])
+  const authority = rulesChoice === 'auto' ? detected.id : rulesChoice
+  // the authority the shown rows were computed with (the map, and so an Auto site, can move after generating)
+  const [genAuthority, setGenAuthority] = useState<AuthorityId>('none')
   const fullHa = selBoundary ? turf.area(selBoundary) / 10000 : 0
   const partial = !!(useSel && selBoundary) && site !== selBoundary!.geometry
   const siteHa = turf.area(site) / 10000
@@ -57,8 +72,9 @@ export default function WizardDialog({ close, notify }: { close: () => void; not
   const housing = housingType(b.density)
   const [pw, pd] = b.fillBuildings ? residentialPlotSize(housing, b.density, s.meta.ruleset?.rules.residential?.setback) : plotSizeFor(b.density)
 
-  useEffect(() => { setBlocked(null); setAround(false) }, [useSel, selBoundary, hectares, devHa, fromEnd]) // not `site`: it follows every map move (meta.center)
+  useEffect(() => { setBlocked(null); setAround(false); setMode('grid'); setImagery(null); setImgShown(false) }, [useSel, selBoundary, hectares, devHa, fromEnd]) // not `site`: it follows every map move (meta.center)
   // outline the part that will be developed while choosing it
+  useEffect(() => { if (step === 0) setImgShown(false) }, [step]) // step 0 replaces the preview below
   useEffect(() => { if (step === 0) useStore.getState().setPreview(partial ? { type: 'FeatureCollection', features: [{ type: 'Feature', geometry: site, properties: { color: '#ff7a1a' } }] } : null) }, [step, site, partial])
   useEffect(() => () => useStore.getState().setPreview(null), []) // never leave a preview behind
 
@@ -71,8 +87,14 @@ export default function WizardDialog({ close, notify }: { close: () => void; not
     </label>
   )
 
+  const showPatches = (fc: ConstructionResult['patches']) => {
+    const on = !imgShown
+    setImgShown(on); setShown(null)
+    useStore.getState().setPreview(on ? { type: 'FeatureCollection', features: fc.features.map((f) => ({ ...f, properties: { ...f.properties, color: '#f5a524' } })) } : null)
+  }
+
   const show = (i: number | null) => {
-    setShown(i)
+    setShown(i); setImgShown(false)
     if (i === null) return useStore.getState().setPreview(null)
     useStore.getState().setPreview({
       type: 'FeatureCollection',
@@ -81,10 +103,17 @@ export default function WizardDialog({ close, notify }: { close: () => void; not
     })
   }
 
-  const generate = async (planAround = around, checkOsm = true) => {
+  // road-based generation runs only from its own button; Generate / regenerate go back through the site check
+  const generate = async (planAround = around, checkOsm = true, useRoads = false) => {
     setBlocked(null)
     let sv = survey?.site === site ? survey.sv : undefined
     if (!sv) {
+      if (imagery?.site !== site) { // fire and forget: a slow or failed imagery check never delays or changes generation
+        setImagery({ site })
+        if (imgShown) { setImgShown(false); useStore.getState().setPreview(null) } // the old site's patches
+        const keep = (r: ConstructionResult | Error) => setImagery((x) => x?.site === site ? { site, r } : x)
+        checkConstruction(site).then(keep, (e) => keep(e instanceof Error ? e : new Error(String(e))))
+      }
       setBusy(checkOsm ? `Surveying the site and roads within ${REACH} m (project + OpenStreetMap)…` : 'Checking the site against this project…')
       try {
         sv = await surveySite(site, Object.values(s.features), useSel ? selBoundary?.id : undefined, checkOsm)
@@ -93,16 +122,20 @@ export default function WizardDialog({ close, notify }: { close: () => void; not
         setBusy(''); setBlocked(`Could not survey the site: ${(e as Error).message}`); return
       }
     }
-    if (sv.conflicts.length && !planAround) { setBusy(''); setBlocked(sv.conflicts); zoomTo([{ type: 'Feature', geometry: site } as unknown as PlanFeature], CLEAR_OF_DIALOG); return }
-    setAround(planAround)
+    if (sv.conflicts.length && !planAround && !useRoads) { setBusy(''); setBlocked(sv.conflicts); zoomTo([{ type: 'Feature', geometry: site } as unknown as PlanFeature], CLEAR_OF_DIALOG); return }
+    setAround(planAround && !useRoads)
+    setMode(useRoads ? 'roads' : 'grid')
     const out: Proposal[] = []
-    for (let i = 0; i < count; i++) {
-      setBusy(`Generating alternative ${i + 1} of ${count}…`)
+    const n = useRoads ? Math.min(count, 2) : count // road-based: layouts A and B only
+    for (let i = 0; i < n; i++) {
+      setBusy(`Generating alternative ${i + 1} of ${n}…`)
       await new Promise((r) => setTimeout(r, 30)) // let the UI paint between heavy steps
-      out.push(generatePlan(site, b, VARIANTS[i], s.meta.ruleset, sv))
+      out.push(useRoads ? generateOnRoads(site, b, VARIANTS[i], s.meta.ruleset, sv) : generatePlan(site, b, VARIANTS[i], s.meta.ruleset, sv))
     }
+    out.forEach((p) => p.checks.push(...authorityChecks(p, site, authority, sv, b)))
     setBusy('')
     setGenSite(site)
+    setGenAuthority(authority)
     setProposals(out)
     setShown(null)
     zoomTo([{ type: 'Feature', geometry: site } as unknown as PlanFeature], CLEAR_OF_DIALOG)
@@ -160,6 +193,15 @@ export default function WizardDialog({ close, notify }: { close: () => void; not
           </>}
           {!(useSel && selBoundary) && num('Square site at map centre', hectares, (v) => { setHectares(Math.max(1, v)); setProposals([]) }, 'ha', 1)}
           <p className="text-[11px]">Site area: <b>{siteHa.toFixed(1)} ha</b>. Location {(turf.centroid(site).geometry.coordinates[1]).toFixed(4)}, {(turf.centroid(site).geometry.coordinates[0]).toFixed(4)}.</p>
+          <label className="grid grid-cols-[1fr_168px] items-center gap-2">
+            <span className="text-muted">Compare with society rules</span>
+            <select className="input" value={rulesChoice} onChange={(e) => { setRulesChoice(e.target.value as 'auto' | AuthorityId); setProposals([]) }}>
+              <option value="auto">Auto — {detected.id === 'none' ? 'none' : AUTHORITIES[detected.id].name}</option>
+              <option value="none">None</option>
+              {(Object.keys(AUTHORITIES) as Exclude<AuthorityId, 'none'>[]).map((k) => <option key={k} value={k}>{AUTHORITIES[k].name}</option>)}
+            </select>
+          </label>
+          {rulesChoice === 'auto' && <p className="text-[11px] text-muted">{detected.id === 'none' ? 'Auto: the site is outside Islamabad Capital Territory and Rawalpindi District, so no authority rules are compared.' : `Auto: site is in ${detected.area}.`}</p>}
         </>}
 
         {step === 1 && <>
@@ -194,11 +236,23 @@ export default function WizardDialog({ close, notify }: { close: () => void; not
           {num('Road cost', b.roadCostPerM2, (v) => set('roadCostPerM2', v), '/m²')}
           {num('Building cost', b.buildingCostPerM2, (v) => set('buildingCostPerM2', v), '/m²')}
           {num('Alternatives to generate', count, (v) => setCount(Math.max(1, Math.min(4, Math.round(v)))), '1–4', 1)}
-          <p className="text-[11px] text-muted">Alternatives vary the spine direction and the order of land-use bands. Generation is rule-based: an arterial spine on the long axis, land-use bands in proportion to the mix, subdivided blocks, and facilities sized to the population.</p>
+          {mode === 'roads' && <p className="text-[11px] text-muted">Road-based generation: the existing roads are the frame, blocks between them are subdivided along the road they face, land use is assigned by whole block. Up to 2 alternatives.</p>}
+          {mode !== 'roads' && <p className="text-[11px] text-muted">Alternatives vary the spine direction and the order of land-use bands. Generation is rule-based: an arterial spine on the long axis, land-use bands in proportion to the mix, subdivided blocks, and facilities sized to the population.</p>}
         </>}
 
         {step === 5 && <>
           {!proposals.length && <button className="btn-primary" disabled={!!busy} onClick={() => generate()}>{busy || `Generate ${count} alternative(s)`}</button>}
+          {imagery && (() => {
+            const n = imagery.r && imageryNote(imagery.r)
+            const patches = imagery.r && !(imagery.r instanceof Error) && imagery.r.patches.features.length ? imagery.r.patches : null
+            return (
+              <div className={`rounded border p-2 text-[11px] ${n?.tone === 'warn' ? 'border-warn text-warn' : 'border-line text-muted'}`}>
+                {n ? n.text : 'Checking satellite imagery for recent construction (Sentinel-2, ~30–60 s)…'}
+                {patches && <button className="btn mt-1.5 w-full justify-center border border-line text-ink" onClick={() => showPatches(patches)}>{imgShown ? 'Hide changed areas' : 'Show changed areas on map'}</button>}
+                {n?.tone === 'warn' && <div className="mt-1 text-[10px] text-muted">10 m pixels; ploughing, floods or fires can false-alarm. {(imagery.r as ConstructionResult).attribution}.</div>}
+              </div>
+            )
+          })()}
           {blocked && (
             <div className="rounded border border-bad p-2 text-[11px] text-bad">
               {typeof blocked === 'string' ? <>
@@ -207,12 +261,17 @@ export default function WizardDialog({ close, notify }: { close: () => void; not
                 <div className="mt-1 text-muted">Only this project is checked: existing buildings and roads on the ground won't be detected or kept.</div>
               </> : <>
                 <b>This site already has development on it.</b>
+                {blocked.some((c) => c.construction) && <div className="mt-1">Construction is under way here ({blocked.filter((c) => c.construction).length} mapped site(s)) — check its status on the ground before planning.</div>}
                 <ul className="mt-1 list-disc pl-4 text-ink">
                   {blocked.slice(0, 8).map((c, i) => <li key={i}>{c.label} <span className="text-muted">({c.source === 'osm' ? 'OpenStreetMap' : 'this project'})</span></li>)}
                 </ul>
                 {blocked.length > 8 && <div className="text-muted">…and {blocked.length - 8} more.</div>}
                 <div className="mt-1 text-ink">Plan around it: existing roads and buildings are kept, plots stay clear of them, and the new roads join the existing ones.</div>
-                <button className="btn-primary mt-1.5 w-full" disabled={!!busy} onClick={() => generate(true)}>{busy || 'Plan around existing development'}</button>
+                <button className="btn-primary mt-1.5 w-full" disabled={!!busy} onClick={() => generate(true, true, false)}>{busy || 'Plan around existing development'}</button>
+                {survey?.site === site && survey.sv.roads.some((r) => turf.booleanIntersects(r.geometry, site)) && <>
+                  <div className="mt-2 text-ink">Or build on them: the existing roads become the street frame, the land between them is subdivided, and deep blocks get new local streets.</div>
+                  <button className="btn-primary mt-1.5 w-full" disabled={!!busy} onClick={() => generate(true, true, true)}>{busy || 'Build on the existing roads'}</button>
+                </>}
                 <div className="mt-1 text-muted">Or move the map / draw a boundary on empty land and try again.</div>
               </>}
             </div>
@@ -238,6 +297,7 @@ export default function WizardDialog({ close, notify }: { close: () => void; not
                   ))}</tr>
                 </tbody>
               </table>
+              {genAuthority !== 'none' && <p className="mt-1 text-[11px] text-muted">{AUTHORITIES[genAuthority].source}</p>}
               <button className="btn mt-2 border border-line" onClick={() => { show(null); setProposals([]) }}>Change brief / regenerate</button>
             </div>
           )}

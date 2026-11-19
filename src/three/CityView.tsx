@@ -12,9 +12,10 @@ import { cameraHeading, groundHit, isRotatable, ringAngle } from './edit3d'
 import { buildScene, buildTerrain, nearCentre, sceneBounds, setDetailVisibility, type BuiltScene } from './scene'
 import { preferPipe } from './pipes'
 import { loadElevation, loadMosaic, tilesFor, TERRAIN_ATTRIBUTION, type Elevation, type TileRange } from './terrain'
+import type { Earth } from './earth'
 import { darkness } from './night'
 import { advanceHour, clockLabel, sunDirection, sunPosition, SEASONS } from './sun'
-import { googleKey, googleSession, googleTileUrl } from '../map/google'
+import { googleKey, googleMapType, googleSession, googleTileUrl } from '../map/google'
 
 type CamMode = 'orbit' | 'top' | 'walk'
 interface Opts { camera: CamMode; terrain: boolean; exaggeration: number; hour: number; day: number; shadows: boolean; trees: boolean; lights: boolean; cars: boolean; playing: boolean; speed: 1 | 60 | 600 | 3600; underground: boolean }
@@ -31,6 +32,7 @@ export default function CityView() {
   const host = useRef<HTMLDivElement>(null)
   const [o, setO] = useState<Opts>({ camera: 'orbit', terrain: true, exaggeration: 1, hour: 15, day: 172, shadows: true, trees: true, lights: true, cars: true, playing: true, speed: 1, underground: false })
   const [status, setStatus] = useState('')
+  const [credit, setCredit] = useState<{ text: string; logo?: string } | null>(null) // Google Earth attribution while its tiles show
   const [locked, setLocked] = useState(false)
   const optsRef = useRef(o)
   const hourRef = useRef(o.hour) // the running clock; state only mirrors it (throttled) for the slider
@@ -65,6 +67,18 @@ export default function CityView() {
     let built: BuiltScene | null = null
     let terrain: { key: string; mesh: THREE.Mesh } | null = null
     let env: { key: string; elevation?: Elevation; ground?: { texture: THREE.Texture; range: TileRange } } | null = null
+    // "Google Earth (3D)" basemap: Google's 3D tiles replace our terrain; on failure (or no key) the normal terrain shows
+    let earth: { at: string; e: Earth } | null = null
+    let earthFailed = false
+    // one load in flight per origin: edits during the (up to 20 s) load await it instead of starting another billed session
+    let earthLoad: { at: string; p: Promise<Earth> } | null = null
+    const dropEarthLoad = () => { earthLoad?.p.then((e) => e.dispose(), () => {}); earthLoad = null }
+    const earthWanted = () => useStore.getState().meta.basemap === 'google-earth' && !!googleKey() && !earthFailed
+    const dropTerrain = () => {
+      if (!terrain) return
+      scene.remove(terrain.mesh); terrain.mesh.geometry.dispose(); ((terrain.mesh.userData.ghostOf ?? terrain.mesh.material) as THREE.Material).dispose() // the original, never a shared ghost copy
+      terrain = null
+    }
     let framed = false
     let disposed = false
 
@@ -108,20 +122,21 @@ export default function CityView() {
     // Terrain + ground imagery for the current area (cached by area/options).
     const loadEnv = async (bounds: [number, number, number, number]) => {
       const s = useStore.getState(), op = optsRef.current
-      const key = `${bounds.map((v) => v.toFixed(3))}|${op.terrain}|${s.meta.basemap}`
+      const onEarth = earthWanted() // Google's tiles carry their own ground: load neither elevation nor imagery
+      const key = `${bounds.map((v) => v.toFixed(3))}|${op.terrain}|${s.meta.basemap}|${onEarth}`
       if (env?.key === key) return env
-      setStatus('Loading terrain & imagery…')
+      if (!onEarth) setStatus('Loading terrain & imagery…')
       const next: NonNullable<typeof env> = { key }
       const problems: string[] = []
-      await Promise.all([
+      if (!onEarth) await Promise.all([
         op.terrain ? loadElevation(bounds).then((e) => { next.elevation = e }).catch(() => problems.push('terrain unavailable — showing flat ground')) : null,
         s.meta.basemap !== 'none' ? (async () => {
           const range = tilesFor(bounds, 64, 18)
           // Google basemap → the same Google imagery on the 3D ground (one session; OSM if Google fails)
           let tpl = OSM
           const gk = googleKey()
-          if (s.meta.basemap.startsWith('google-') && gk)
-            tpl = await googleSession(gk, s.meta.basemap === 'google-satellite' ? 'satellite' : 'roadmap').then((ss) => googleTileUrl(gk, ss)).catch(() => OSM)
+          if (googleMapType(s.meta.basemap) && gk)
+            tpl = await googleSession(gk, googleMapType(s.meta.basemap)!).then((ss) => googleTileUrl(gk, ss)).catch(() => OSM)
           const { canvas, failed } = await loadMosaic(tpl, range)
           if (failed === range.cols * range.rows) { problems.push('imagery unavailable'); return }
           if (s.meta.basemap === 'grey') {
@@ -147,14 +162,40 @@ export default function CityView() {
       const s = useStore.getState()
       const features = nearCentre(Object.values(s.features), s.meta.center)
       const { origin, bounds } = sceneBounds(features, s.meta.center)
+      if (s.meta.basemap !== 'google-earth') earthFailed = false // choosing it again retries
+      else if (!googleKey() && !earthFailed && (earthFailed = true)) s.notify('Google Earth needs your own Google Maps API key (Analytics → Google Maps API key) — showing normal terrain.')
+      const at = origin.map((v) => v.toFixed(5)).join(',')
+      if (earth && (!earthWanted() || earth.at !== at)) { earth.e.dispose(); earth = null }
+      if (earthLoad && (!earthWanted() || earthLoad.at !== at)) dropEarthLoad()
+      if (earthWanted() && !earth) {
+        setStatus('Loading Google Earth…')
+        if (!earthLoad) earthLoad = { at, p: import('./earth').then((m) => m.loadEarth(googleKey(), [origin[0], origin[1]], camera, renderer)) }
+        const pending = earthLoad
+        try {
+          const e3 = await pending.p
+          if (disposed) { e3.dispose(); return }
+          if (my !== token || earthLoad !== pending) return // a newer rebuild takes it (or it was dropped and disposed)
+          earthLoad = null
+          earth = { at, e: e3 }
+          e3.group.visible = !optsRef.current.underground
+          scene.add(e3.group)
+          setStatus('')
+        } catch (err) {
+          if (disposed || my !== token || earthLoad !== pending) return
+          earthLoad = null
+          earthFailed = true
+          s.notify(`Google Earth unavailable: ${(err as Error).message} — showing normal terrain (check the key, that "Map Tiles API" is enabled and allowed in the key's API restrictions, and billing is on).`)
+        }
+      }
       const e = await loadEnv(bounds)
       if (disposed || my !== token) return
       const op = optsRef.current
       const t0 = performance.now()
       // terrain only changes with the area, imagery or exaggeration — keep it otherwise
       const tKey = `${e.key}|${op.exaggeration}`
-      if (terrain?.key !== tKey) {
-        if (terrain) { scene.remove(terrain.mesh); terrain.mesh.geometry.dispose(); ((terrain.mesh.userData.ghostOf ?? terrain.mesh.material) as THREE.Material).dispose() } // the original, never a shared ghost copy
+      if (earth) dropTerrain()
+      else if (terrain?.key !== tKey) {
+        dropTerrain()
         terrain = { key: tKey, mesh: buildTerrain(origin, bounds, e.elevation, op.exaggeration, e.ground) }
         scene.add(terrain.mesh)
       }
@@ -171,7 +212,7 @@ export default function CityView() {
       if (!framed) frame()
       placeSun()
       placeRing()
-      if (optsRef.current.underground) built.setUnderground(true, terrain ? [terrain.mesh] : [])
+      if (optsRef.current.underground) built.setUnderground(true, terrain ? [terrain.mesh] : []) // Earth: hidden while underground (streamed tiles can't be ghosted)
       // ponytail: warm up 20 simulated s offscreen (~60 ms) so streets aren't empty after a rebuild, then one real step to write poses; a direct prefill in drive.ts is the upgrade
       if (built.traffic) {
         for (let i = 0; i < 200; i++) built.traffic.step(0.1, hourRef.current, () => false, false)
@@ -344,6 +385,7 @@ export default function CityView() {
     const clock = new THREE.Clock()
     let pipeT = 0 // pipe-flow animation time: real seconds while playing
     let raf = 0
+    let creditTick = 0, creditShown = false
     const loop = () => {
       raf = requestAnimationFrame(loop)
       const dt = Math.min(0.1, clock.getDelta())
@@ -379,6 +421,11 @@ export default function CityView() {
         }
       }
       if (compass.current) compass.current.style.transform = `rotate(${-cameraHeading(camera, camera.position.clone().add(camera.getWorldDirection(fwdV)))}deg)`
+      if (earth) {
+        camera.updateMatrixWorld()
+        earth.e.update()
+        if (creditTick++ % 60 === 0) { const c = earth.e.credits(); creditShown = true; setCredit((p) => p?.text === c.text && p.logo === c.logo ? p : c) }
+      } else if (creditShown) { creditShown = false; setCredit(null) }
       renderer.render(scene, camera)
     }
     loop()
@@ -395,7 +442,7 @@ export default function CityView() {
       setOpts(next, prev) {
         optsRef.current = next
         if (next.camera !== prev.camera) { setCamera(next.camera); placeRing() }
-        if (next.underground !== prev.underground) built?.setUnderground(next.underground, terrain ? [terrain.mesh] : [])
+        if (next.underground !== prev.underground) { built?.setUnderground(next.underground, terrain ? [terrain.mesh] : []); if (earth) earth.e.group.visible = !next.underground }
         if (next.hour !== prev.hour || next.playing !== prev.playing || next.day !== prev.day || next.shadows !== prev.shadows) placeSun()
         if (next.terrain !== prev.terrain || next.exaggeration !== prev.exaggeration || next.trees !== prev.trees || next.lights !== prev.lights || next.cars !== prev.cars) schedule()
       },
@@ -431,6 +478,7 @@ export default function CityView() {
       walk.dispose(); orbit.dispose()
       if (built) { built.setNight(0, 12); built.dispose() } // daylight again for the map layer and thumbnails
       if (terrain) { terrain.mesh.geometry.dispose(); (terrain.mesh.material as THREE.Material).dispose() }
+      earth?.e.dispose(); dropEarthLoad()
       env?.ground?.texture.dispose()
       renderer.dispose()
       renderer.domElement.remove()
@@ -503,7 +551,8 @@ export default function CityView() {
         {status && <p className="text-[10px] text-warn">{status}</p>}
       </div>
       <div className="pointer-events-none absolute bottom-1 right-2 rounded bg-black/50 px-2 py-0.5 text-[10px] text-white">
-        © OpenStreetMap contributors · {TERRAIN_ATTRIBUTION}
+        {credit ? <span className="flex items-center gap-1">{credit.logo && <img src={credit.logo} alt="Google" className="h-3" />}{credit.text}</span>
+          : <>© OpenStreetMap contributors · {TERRAIN_ATTRIBUTION}</>}
       </div>
     </div>
   )

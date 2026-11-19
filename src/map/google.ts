@@ -44,3 +44,7 @@ export async function googleCopyright(key: string, session: string, zoom: number
   const q = `session=${session}&key=${key}&zoom=${Math.round(zoom)}&north=${n}&south=${s}&east=${e}&west=${w}`
   return (await json(await fetch(`${API}/tile/v1/viewport?${q}`))).copyright ?? 'Google'
 }
+
+/** The 2D tile type a basemap shows (Google Earth: satellite — the flat map can't draw 3D), or null for non-Google basemaps. */
+export const googleMapType = (b: string): GoogleMapType | null =>
+  b === 'google-roadmap' ? 'roadmap' : b === 'google-satellite' || b === 'google-earth' ? 'satellite' : null

@@ -6,7 +6,7 @@ import { parseZip } from 'shpjs'
 import { zip as shpZip } from '@mapbox/shp-write'
 import DxfParser from 'dxf-parser'
 import { frame } from './geo'
-import { colorOf, componentDef, ZONING, type Attrs, type Layer, type PlanFeature } from './model'
+import { colorOf, componentDef, FLOOR_HEIGHT, ZONING, type Attrs, type Layer, type PlanFeature } from './model'
 import { importFeatureCollection, type Classifier, type LayerOf } from './persist'
 import { GDAL_RASTER, GDAL_VECTOR, gdalImport } from './api'
 
@@ -191,16 +191,19 @@ const xml = (v: unknown) => String(v ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&
 const kmlColor = (hex: string, alpha: string) => `${alpha}${hex.slice(5, 7)}${hex.slice(3, 5)}${hex.slice(1, 3)}` // KML is aabbggrr
 
 export function toKML(features: PlanFeature[], layers: Layer[], name: string): string {
-  const coords = (cs: Position[]) => cs.map((p) => `${p[0]},${p[1]},0`).join(' ')
-  const geom = (g: Geometry) => g.type === 'Point' ? `<Point><coordinates>${coords([g.coordinates])}</coordinates></Point>`
+  const coords = (cs: Position[], h = 0) => cs.map((p) => `${p[0]},${p[1]},${h}`).join(' ')
+  // buildings (floors > 0) extrude to their height above Google Earth's terrain — same height rule as the 3D view
+  const geom = (g: Geometry, h: number) => g.type === 'Point' ? `<Point><coordinates>${coords([g.coordinates])}</coordinates></Point>`
     : g.type === 'LineString' ? `<LineString><tessellate>1</tessellate><coordinates>${coords(g.coordinates)}</coordinates></LineString>`
-    : g.type === 'Polygon' ? `<Polygon><outerBoundaryIs><LinearRing><coordinates>${coords(g.coordinates[0])}</coordinates></LinearRing></outerBoundaryIs>${g.coordinates.slice(1).map((r) => `<innerBoundaryIs><LinearRing><coordinates>${coords(r)}</coordinates></LinearRing></innerBoundaryIs>`).join('')}</Polygon>` : ''
+    : g.type === 'Polygon' ? `<Polygon>${h ? '<extrude>1</extrude><altitudeMode>relativeToGround</altitudeMode>' : ''}<outerBoundaryIs><LinearRing><coordinates>${coords(g.coordinates[0], h)}</coordinates></LinearRing></outerBoundaryIs>${g.coordinates.slice(1).map((r) => `<innerBoundaryIs><LinearRing><coordinates>${coords(r, h)}</coordinates></LinearRing></innerBoundaryIs>`).join('')}</Polygon>` : ''
   const folders = layers.map((l) => {
     const marks = features.filter((f) => f.properties.layerId === l.id).map((f) => {
+      const a = f.properties.attrs
+      const h = Number(a.height) || (Number(a.floors) || 0) * FLOOR_HEIGHT
       const c = colorOf(f)
       const data = { type: f.properties.type, ...f.properties.attrs }
       return `<Placemark><name>${xml(f.properties.name)}</name><Style><LineStyle><color>${kmlColor(c, 'ff')}</color><width>2</width></LineStyle><PolyStyle><color>${kmlColor(c, '80')}</color></PolyStyle></Style>`
-        + `<ExtendedData>${Object.entries(data).map(([k, v]) => `<Data name="${xml(k)}"><value>${xml(v)}</value></Data>`).join('')}</ExtendedData>${geom(f.geometry)}</Placemark>`
+        + `<ExtendedData>${Object.entries(data).map(([k, v]) => `<Data name="${xml(k)}"><value>${xml(v)}</value></Data>`).join('')}</ExtendedData>${geom(f.geometry, h)}</Placemark>`
     })
     return marks.length ? `<Folder><name>${xml(l.name)}</name>${marks.join('')}</Folder>` : ''
   })

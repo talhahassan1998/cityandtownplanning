@@ -27,7 +27,7 @@ const inner = (site: Polygon): Feature<Polygon> => {
   return (b?.geometry.type === 'Polygon' ? b : turf.feature(site)) as Feature<Polygon>
 }
 
-export interface Conflict { source: 'plan' | 'osm'; label: string }
+export interface Conflict { source: 'plan' | 'osm'; label: string; /** under construction (OSM-mapped) */ construction?: boolean }
 
 /** Plan objects already occupying the site. `ignoreId`: the boundary/zone being planned inside. */
 export function planConflicts(site: Polygon, features: Iterable<PlanFeature>, ignoreId?: string): Conflict[] {
@@ -43,7 +43,12 @@ export function planConflicts(site: Polygon, features: Iterable<PlanFeature>, ig
 export const isDeveloped = (tags: Record<string, unknown>) =>
   Object.entries(OSM_DEVELOPED).some(([k, re]) => typeof tags[k] === 'string' && re.test(tags[k] as string))
 
-/** OpenStreetMap features (from `overpassToGeoJSON`) that are development inside the site. */
+/** Under-construction label for OSM tags (`building=construction`, `landuse=construction`), else ''. */
+const constructionLabel = (p: Record<string, unknown>) =>
+  p.building === 'construction' ? `building under construction${p.construction && p.construction !== 'yes' ? ` (${p.construction})` : ''}`
+    : p.landuse === 'construction' ? 'construction site' : ''
+
+/** OpenStreetMap features (from `overpassToGeoJSON`) that are development inside the site; construction first. */
 export function osmConflicts(site: Polygon, fc: FeatureCollection): Conflict[] {
   const s = inner(site)
   return fc.features
@@ -51,8 +56,10 @@ export function osmConflicts(site: Polygon, fc: FeatureCollection): Conflict[] {
     .map((f) => {
       const p = f.properties ?? {}
       const kind = Object.keys(OSM_DEVELOPED).find((k) => typeof p[k] === 'string' && OSM_DEVELOPED[k].test(p[k]))!
-      return { source: 'osm' as const, label: `${kind === 'building' ? 'building' : `${kind}=${p[kind]}`}${p.name ? ` "${p.name}"` : ''}` }
+      const what = constructionLabel(p) || (kind === 'building' ? 'building' : `${kind}=${p[kind]}`)
+      return { source: 'osm' as const, construction: !!constructionLabel(p), label: `${what}${p.name ? ` "${p.name}"` : ''}` }
     })
+    .sort((a, b) => +b.construction - +a.construction) // stable: otherwise in map order
 }
 
 /** Development keys and water inside the site bbox, plus roads in `near` (the wider area new roads may join). */
